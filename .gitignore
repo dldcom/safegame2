@@ -1,0 +1,29 @@
+# 의존성
+node_modules/
+
+# 빌드 산출물
+dist/
+*.tsbuildinfo
+
+# 환경 변수
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 에디터
+.vscode/
+.idea/
+
+# 로그
+*.log
+npm-debug.log*
+
+# 임시 파일
+*.tmp
+*.bak
+
+# raw 자산은 git 에 커밋 (다른 PC 에서 재처리 가능하게)
+# 가공된 자산도 커밋 (git pull 만으로 게임 실행 가능하게)
