@@ -4,6 +4,9 @@
 
 import Phaser from 'phaser';
 import BootScene from './scenes/BootScene';
+import Act1LibraryScene from './scenes/Act1LibraryScene';
+import Act1CorridorScene from './scenes/Act1CorridorScene';
+import Act1PlaygroundScene from './scenes/Act1PlaygroundScene';
 import type { Act } from '@shared/types/game';
 
 export type SafeGameInit = {
@@ -30,7 +33,7 @@ export const createPhaserGame = (opts: SafeGameInit): Phaser.Game => {
       autoCenter: Phaser.Scale.CENTER_BOTH,
     },
     pixelArt: true,
-    scene: [BootScene],
+    scene: [BootScene, Act1LibraryScene, Act1CorridorScene, Act1PlaygroundScene],
   };
   const game = new Phaser.Game(config);
   game.registry.set('startAct', opts.startAct ?? 1);

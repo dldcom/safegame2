@@ -1,17 +1,19 @@
-// 에셋 로딩 씬. /assets/ 폴더에서 캐릭터/NPC/아이템/맵 로드.
+// 에셋 로딩 씬. /assets/ 폴더에서 캐릭터/아이템/맵 로드.
 // 자산이 아직 없을 때도 안전하게 스킵 (404 는 경고만).
 
 import Phaser from 'phaser';
+import { CHARACTER_IDS } from '@shared/lib/characters';
 
 // 향후 자산이 추가되면 여기에 등록만 하면 자동 로드.
 // 캐릭터 = 6프레임×4방향 아틀라스 (48×64 프레임)
-// NPC = 동일 포맷
-// 아이템 = 32×32
-// 맵 = 1280×1280 JPG + Tiled JSON
+// 모든 캐릭터(6마리)는 assets/characters/ 하나에서 로드.
+// 학생이 고른 캐릭터가 player, 나머지 5마리가 NPC 슬롯에 매핑됨.
 
-const PLAYER_CHARACTERS = ['student'] as const;
-const NPCS = ['sibling'] as const;
-const MAPS = ['act1_library'] as const;
+// 아이템 = 32×32 (또는 명세된 크기)
+const ITEMS = ['fire_alarm', 'door_safe', 'elevator', 'stairs'] as const;
+
+// 맵 = 1280×1280 JPG + Tiled JSON
+const MAPS = ['act1_library', 'act1_corridor', 'act1_playground'] as const;
 
 export default class BootScene extends Phaser.Scene {
   constructor() {
@@ -34,18 +36,21 @@ export default class BootScene extends Phaser.Scene {
       bar.width = 400 * value;
     });
 
-    for (const id of PLAYER_CHARACTERS) {
+    // 6마리 동물 캐릭터 (학생 1 + NPC 5 모두 같은 폴더에서)
+    // _b 변형 = 기어가는 자세 (CP4 정답 후 자세 ON 시 텍스처 swap)
+    for (const id of CHARACTER_IDS) {
       this.load.spritesheet(id, `/assets/characters/${id}.png`, {
+        frameWidth: 48,
+        frameHeight: 64,
+      });
+      this.load.spritesheet(`${id}_b`, `/assets/characters/${id}_b.png`, {
         frameWidth: 48,
         frameHeight: 64,
       });
     }
 
-    for (const id of NPCS) {
-      this.load.spritesheet(id, `/assets/npcs/${id}.png`, {
-        frameWidth: 48,
-        frameHeight: 64,
-      });
+    for (const id of ITEMS) {
+      this.load.image(id, `/assets/items/${id}.png`);
     }
 
     for (const id of MAPS) {
@@ -59,12 +64,7 @@ export default class BootScene extends Phaser.Scene {
   }
 
   create() {
-    // TODO: Act1Scene 구현 후 변경
-    this.add.text(this.scale.width / 2, this.scale.height / 2, 'BootScene 완료\n(씬 미구현)', {
-      color: '#e5e7eb',
-      fontSize: '20px',
-      fontFamily: 'Pretendard, sans-serif',
-      align: 'center',
-    }).setOrigin(0.5);
+    // 1막 도서관 씬으로 진입. 추후 startAct registry 보고 분기.
+    this.scene.start('Act1LibraryScene');
   }
 }

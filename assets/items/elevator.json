@@ -1,0 +1,9 @@
+{
+  "id": "elevator",
+  "name": "엘리베이터",
+  "itemId": "elevator",
+  "imageExt": "png",
+  "createdAt": "2026-05-01T04:05:25.995Z",
+  "updatedAt": "2026-05-01T04:05:25.998Z",
+  "imagePath": "/assets/items/elevator.png"
+}

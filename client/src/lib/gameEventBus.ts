@@ -11,6 +11,8 @@ export type GameEventMap = {
 
   // Phaser → React: 체크포인트 시작 (10초 카운트다운 시작)
   'checkpoint:start': { act: Act; index: number; label: string };
+  // Phaser → React: 카운트다운 매 초 갱신 (0 = 숨김)
+  'checkpoint:countdown': { remaining: number };
   // Phaser → React: 체크포인트 결과
   'checkpoint:success': { act: Act; index: number };
   'checkpoint:failed': { act: Act; index: number; reason: string };

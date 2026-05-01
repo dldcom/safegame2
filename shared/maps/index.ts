@@ -4,10 +4,13 @@
 export * from './types';
 
 import type { MapSpawnConfig } from './types';
+import { ACT1_LIBRARY_SPAWNS } from './act1_library.spawns';
+import { ACT1_CORRIDOR_SPAWNS } from './act1_corridor.spawns';
+import { ACT1_PLAYGROUND_SPAWNS } from './act1_playground.spawns';
 
 // 맵 id → spawn config 레지스트리
-// Claude 가 시나리오 작업하면서 한 줄씩 추가 (예: act1_library, act2_street).
 export const SPAWN_REGISTRY: Record<string, MapSpawnConfig> = {
-  // act1_library: ACT1_LIBRARY_SPAWNS,
-  // act2_street: ACT2_STREET_SPAWNS,
+  act1_library: ACT1_LIBRARY_SPAWNS,
+  act1_corridor: ACT1_CORRIDOR_SPAWNS,
+  act1_playground: ACT1_PLAYGROUND_SPAWNS,
 };

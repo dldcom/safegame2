@@ -1,0 +1,9 @@
+{
+  "id": "fire_alarm",
+  "name": "화재경보기",
+  "itemId": "fire_alarm",
+  "imageExt": "png",
+  "createdAt": "2026-05-01T04:05:19.951Z",
+  "updatedAt": "2026-05-01T04:05:19.953Z",
+  "imagePath": "/assets/items/fire_alarm.png"
+}

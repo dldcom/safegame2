@@ -4,6 +4,8 @@ import { useEffect, useRef } from 'react';
 import { createPhaserGame } from '@/main-phaser';
 import DialogueBox from '@/components/DialogueBox';
 import TouchControls from '@/components/TouchControls';
+import CountdownTimer from '@/components/CountdownTimer';
+import ActClearOverlay from '@/components/ActClearOverlay';
 import { useGameStore } from '@/store/useGameStore';
 
 const PARENT_ID = 'phaser-parent';
@@ -27,8 +29,10 @@ export default function GamePage() {
   return (
     <div style={styles.wrap}>
       <div id={PARENT_ID} style={styles.phaser} />
+      <CountdownTimer />
       <DialogueBox />
       <TouchControls />
+      <ActClearOverlay />
     </div>
   );
 }

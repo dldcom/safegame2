@@ -12,8 +12,10 @@ const A_BUTTON_SIZE = 96;
 
 export default function TouchControls() {
   const setJoy = useTouchControlsStore((s) => s.setJoy);
+  const setCrouching = useTouchControlsStore((s) => s.setCrouching);
   const baseRef = useRef<HTMLDivElement | null>(null);
   const [knob, setKnob] = useState<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
+  const [bPressed, setBPressed] = useState(false);
   const activePointer = useRef<number | null>(null);
 
   const release = useCallback(() => {
@@ -61,6 +63,28 @@ export default function TouchControls() {
     };
   }, [updateFromPointer, release]);
 
+  // 키보드 C 키 — B 버튼 홀드와 동일 동작
+  useEffect(() => {
+    const onDown = (e: KeyboardEvent) => {
+      if (e.code === 'KeyC' && !e.repeat) {
+        setBPressed(true);
+        setCrouching(true);
+      }
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.code === 'KeyC') {
+        setBPressed(false);
+        setCrouching(false);
+      }
+    };
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+    };
+  }, [setCrouching]);
+
   const onJoyDown = (e: React.PointerEvent) => {
     if (activePointer.current !== null) return;
     activePointer.current = e.pointerId;
@@ -104,6 +128,30 @@ export default function TouchControls() {
         />
       </div>
 
+      {/* B 버튼 — 우하단, A 버튼 왼쪽 (낮은 자세 + 코 가림 홀드) */}
+      <button
+        type="button"
+        style={{ ...styles.bButton, ...(bPressed ? styles.bButtonPressed : null) }}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          (e.target as Element).setPointerCapture?.(e.pointerId);
+          setBPressed(true);
+          setCrouching(true);
+        }}
+        onPointerUp={(e) => {
+          e.preventDefault();
+          setBPressed(false);
+          setCrouching(false);
+        }}
+        onPointerCancel={() => {
+          setBPressed(false);
+          setCrouching(false);
+        }}
+      >
+        B
+      </button>
+
+      {/* A 버튼 — 우하단 */}
       <button
         type="button"
         style={styles.aButton}
@@ -165,5 +213,29 @@ const styles: Record<string, React.CSSProperties> = {
     touchAction: 'none',
     userSelect: 'none',
     zIndex: 700,
+  },
+  bButton: {
+    position: 'absolute',
+    right: 32 + A_BUTTON_SIZE + 16, // A 버튼 왼쪽 16px 간격
+    bottom: 48,
+    width: 80,
+    height: 80,
+    borderRadius: '50%',
+    background: '#3b82f6',
+    color: '#fff',
+    border: '4px solid #fff',
+    boxShadow: '0 6px 20px rgba(0, 0, 0, 0.5)',
+    fontSize: 30,
+    fontWeight: 900,
+    fontFamily: 'Pretendard, sans-serif',
+    cursor: 'pointer',
+    touchAction: 'none',
+    userSelect: 'none',
+    zIndex: 700,
+    transition: 'transform 80ms ease, background 80ms ease',
+  },
+  bButtonPressed: {
+    transform: 'scale(0.9)',
+    background: '#1d4ed8',
   },
 };

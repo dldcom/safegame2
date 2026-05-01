@@ -1,0 +1,9 @@
+{
+  "id": "door_safe",
+  "name": "안전한 문",
+  "itemId": "door_safe",
+  "imageExt": "png",
+  "createdAt": "2026-05-01T04:05:22.780Z",
+  "updatedAt": "2026-05-01T04:05:22.782Z",
+  "imagePath": "/assets/items/door_safe.png"
+}

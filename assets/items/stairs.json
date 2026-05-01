@@ -1,0 +1,9 @@
+{
+  "id": "stairs",
+  "name": "계단",
+  "itemId": "stairs",
+  "imageExt": "png",
+  "createdAt": "2026-05-01T04:05:29.039Z",
+  "updatedAt": "2026-05-01T04:05:29.041Z",
+  "imagePath": "/assets/items/stairs.png"
+}

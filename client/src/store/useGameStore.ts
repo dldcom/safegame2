@@ -12,11 +12,15 @@ const emptyProgress = (act: Act): ActProgress => ({
   results: Array(6).fill('pending') as CheckpointResult[],
 });
 
-type GameStore = {
+type Persisted = {
+  selectedCharacter: string | null; // 시작 화면에서 고른 6마리 중 하나
   currentAct: Act;
   act1: ActProgress;
   act2: ActProgress;
+};
 
+type GameStore = Persisted & {
+  setCharacter: (id: string | null) => void;
   startNewGame: () => void;
   setAct: (act: Act) => void;
   recordCheckpoint: (act: Act, index: number, result: CheckpointResult) => void;
@@ -24,24 +28,27 @@ type GameStore = {
   isActComplete: (act: Act) => boolean;
 };
 
-const loadFromStorage = (): Pick<GameStore, 'currentAct' | 'act1' | 'act2'> => {
+const defaultState = (): Persisted => ({
+  selectedCharacter: null,
+  currentAct: 1,
+  act1: emptyProgress(1),
+  act2: emptyProgress(2),
+});
+
+const loadFromStorage = (): Persisted => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as Pick<GameStore, 'currentAct' | 'act1' | 'act2'>;
-      return parsed;
+      const parsed = JSON.parse(raw) as Partial<Persisted>;
+      return { ...defaultState(), ...parsed };
     }
   } catch {
     /* 손상된 데이터 무시 */
   }
-  return {
-    currentAct: 1,
-    act1: emptyProgress(1),
-    act2: emptyProgress(2),
-  };
+  return defaultState();
 };
 
-const persist = (state: Pick<GameStore, 'currentAct' | 'act1' | 'act2'>) => {
+const persist = (state: Persisted) => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch {
@@ -49,12 +56,27 @@ const persist = (state: Pick<GameStore, 'currentAct' | 'act1' | 'act2'>) => {
   }
 };
 
+const snapshot = (s: GameStore): Persisted => ({
+  selectedCharacter: s.selectedCharacter,
+  currentAct: s.currentAct,
+  act1: s.act1,
+  act2: s.act2,
+});
+
 export const useGameStore = create<GameStore>((set, get) => ({
   ...loadFromStorage(),
 
+  setCharacter: (id) => {
+    set({ selectedCharacter: id });
+    persist(snapshot(get()));
+  },
+
   startNewGame: () => {
-    const next = {
-      currentAct: 1 as Act,
+    // 캐릭터 선택은 유지 (다시 시작해도 같은 캐릭터)
+    const keep = get().selectedCharacter;
+    const next: Persisted = {
+      selectedCharacter: keep,
+      currentAct: 1,
       act1: emptyProgress(1),
       act2: emptyProgress(2),
     };
@@ -64,7 +86,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setAct: (act) => {
     set({ currentAct: act });
-    persist({ ...get(), currentAct: act });
+    persist(snapshot(get()));
   },
 
   recordCheckpoint: (act, index, result) => {
@@ -74,7 +96,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     results[index] = result;
     const next = { ...prev, results };
     set({ [key]: next } as Partial<GameStore>);
-    persist({ ...get(), [key]: next });
+    persist(snapshot(get()));
   },
 
   advanceCheckpoint: (act) => {
@@ -82,7 +104,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const prev = get()[key];
     const next = { ...prev, current: Math.min(prev.current + 1, 6) };
     set({ [key]: next } as Partial<GameStore>);
-    persist({ ...get(), [key]: next });
+    persist(snapshot(get()));
   },
 
   isActComplete: (act) => {
