@@ -8,16 +8,21 @@ export const ACT1_LIBRARY_SPAWNS: MapSpawnConfig = {
   actNumber: 1,
   spawns: [
     // 학생 시작 위치 (도서관 중앙).
-    // 학생이 시작 화면에서 고른 캐릭터가 여기 배치됨.
     { name: 'playerspawn', x: 640, y: 640 },
 
-    // 친구 5 슬롯 — 학생이 고르지 않은 나머지 5마리가 임의 매핑됨.
-    // 위치만 정함. 어느 슬롯에 어느 동물이 들어갈지는 게임 시작 시 결정.
-    { name: 'npc_friend_1', x: 560, y: 576 },
-    { name: 'npc_friend_2', x: 720, y: 576 },
-    { name: 'npc_friend_3', x: 520, y: 704 },
-    { name: 'npc_friend_4', x: 760, y: 704 },
-    { name: 'npc_friend_5', x: 640, y: 736 },
+    // 친구 5 슬롯 — 패닉으로 흩어진 위치 (책상 옆, 구석, 위쪽 공간).
+    // 학생이 다가가서 A 버튼으로 모집해야 합류.
+    { name: 'npc_friend_1', x: 256, y: 896 },  // 좌측 책상 옆
+    { name: 'npc_friend_2', x: 608, y: 928 },  // 책상 사이
+    { name: 'npc_friend_3', x: 896, y: 896 },  // 우측 책상 옆
+    { name: 'npc_friend_4', x: 960, y: 256 },  // 위쪽 우측 빈 공간
+    { name: 'npc_friend_5', x: 256, y: 256 },  // 위쪽 좌측 빈 공간
+
+    // 인벤토리 아이템 — 학생이 줍기 인터랙션.
+    // 휴대폰: 책상 위. 줍기 후에 CP1 (119 신고) 자동 발동.
+    { name: 'item_phone', x: 448, y: 864, width: 32, height: 32 },
+    // 손수건: 다른 책상 위. 복도 CP4 (낮은 자세) 시 옷자락 대신 사용.
+    { name: 'item_handkerchief', x: 704, y: 864, width: 32, height: 32 },
 
     // CP1 트리거 — 옆 교실 창문 (불빛 보임)
     { name: 'item_classroom_window', x: 1100, y: 200, width: 96, height: 64 },

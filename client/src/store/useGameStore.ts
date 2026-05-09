@@ -17,22 +17,47 @@ type Persisted = {
   currentAct: Act;
   act1: ActProgress;
   act2: ActProgress;
+  bestAct1Ms: number | null; // 1막 베스트 기록 (elapsed + penalty)
+  bestAct2Ms: number | null;
 };
 
-type GameStore = Persisted & {
-  setCharacter: (id: string | null) => void;
-  startNewGame: () => void;
-  setAct: (act: Act) => void;
-  recordCheckpoint: (act: Act, index: number, result: CheckpointResult) => void;
-  advanceCheckpoint: (act: Act) => void;
-  isActComplete: (act: Act) => boolean;
+type RunState = {
+  startedAt: number | null; // 막 시작 시각 epoch ms, null 이면 진행 중 아님
+  penaltyMs: number; // 페널티 누적 (ms)
+  finishedMs: number | null; // 완료된 막의 최종 기록 (elapsed + penalty)
+  isBestRun: boolean; // 마지막 finish 시 베스트 갱신됐는지
 };
+
+type GameStore = Persisted &
+  RunState & {
+    setCharacter: (id: string | null) => void;
+    startNewGame: () => void;
+    setAct: (act: Act) => void;
+    recordCheckpoint: (act: Act, index: number, result: CheckpointResult) => void;
+    advanceCheckpoint: (act: Act) => void;
+    isActComplete: (act: Act) => boolean;
+
+    // 시간/페널티
+    startRun: () => void;
+    addPenaltyMs: (ms: number) => void;
+    getElapsedMs: () => number; // 현재까지 누적 (페널티 포함)
+    finishRun: (act: Act) => { totalMs: number; isBest: boolean };
+  };
 
 const defaultState = (): Persisted => ({
   selectedCharacter: null,
   currentAct: 1,
   act1: emptyProgress(1),
   act2: emptyProgress(2),
+  bestAct1Ms: null,
+  bestAct2Ms: null,
+});
+
+const defaultRunState = (): RunState => ({
+  startedAt: null,
+  penaltyMs: 0,
+  finishedMs: null,
+  isBestRun: false,
 });
 
 const loadFromStorage = (): Persisted => {
@@ -61,10 +86,13 @@ const snapshot = (s: GameStore): Persisted => ({
   currentAct: s.currentAct,
   act1: s.act1,
   act2: s.act2,
+  bestAct1Ms: s.bestAct1Ms,
+  bestAct2Ms: s.bestAct2Ms,
 });
 
 export const useGameStore = create<GameStore>((set, get) => ({
   ...loadFromStorage(),
+  ...defaultRunState(),
 
   setCharacter: (id) => {
     set({ selectedCharacter: id });
@@ -72,15 +100,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   startNewGame: () => {
-    // 캐릭터 선택은 유지 (다시 시작해도 같은 캐릭터)
+    // 캐릭터 선택과 베스트 기록은 유지 (다시 시작해도 같은 캐릭터·기록 보존)
     const keep = get().selectedCharacter;
+    const bestAct1 = get().bestAct1Ms;
+    const bestAct2 = get().bestAct2Ms;
     const next: Persisted = {
       selectedCharacter: keep,
       currentAct: 1,
       act1: emptyProgress(1),
       act2: emptyProgress(2),
+      bestAct1Ms: bestAct1,
+      bestAct2Ms: bestAct2,
     };
-    set(next);
+    set({ ...next, ...defaultRunState() });
     persist(next);
   },
 
@@ -110,5 +142,35 @@ export const useGameStore = create<GameStore>((set, get) => ({
   isActComplete: (act) => {
     const key = act === 1 ? 'act1' : 'act2';
     return get()[key].results.every((r) => r === 'success');
+  },
+
+  startRun: () => {
+    set({ startedAt: Date.now(), penaltyMs: 0, finishedMs: null, isBestRun: false });
+  },
+
+  addPenaltyMs: (ms) => {
+    if (ms <= 0) return;
+    set({ penaltyMs: get().penaltyMs + ms });
+  },
+
+  getElapsedMs: () => {
+    const s = get();
+    if (s.finishedMs !== null) return s.finishedMs;
+    if (s.startedAt === null) return s.penaltyMs;
+    return Date.now() - s.startedAt + s.penaltyMs;
+  },
+
+  finishRun: (act) => {
+    const s = get();
+    const total = s.startedAt === null ? s.penaltyMs : Date.now() - s.startedAt + s.penaltyMs;
+    const bestKey = act === 1 ? 'bestAct1Ms' : 'bestAct2Ms';
+    const prevBest = s[bestKey];
+    const isBest = prevBest === null || total < prevBest;
+    if (isBest) {
+      set({ [bestKey]: total } as Partial<GameStore>);
+    }
+    set({ finishedMs: total, isBestRun: isBest, startedAt: null });
+    persist(snapshot(get()));
+    return { totalMs: total, isBest };
   },
 }));

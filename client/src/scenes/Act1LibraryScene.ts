@@ -1,19 +1,22 @@
 // 1막 Map 1: 도서관.
-// 골격 단계 — 학생 이동 + 친구 5명 idle + 카메라 스크롤 + walls 충돌.
-// 체크포인트 (CP1~CP3) 는 다음 단계에서 추가.
+// 친구 5명 흩어진 채 패닉 → 학생이 다가가 A 버튼으로 한 명씩 모집.
+// 휴대폰 줍기 = CP1 (119 신고) 자동 발동 게이트.
+// 손수건 줍기 = 복도 CP4 에서 분기 대사 (옷자락 vs 손수건).
+// CP3 (출구) = 친구 5명 모두 모집 + CP2 통과 후에만 활성.
 
 import Phaser from 'phaser';
 import { CHARACTER_IDS } from '@shared/lib/characters';
+import { getPersonality, pickIdleLine } from '@shared/lib/personalities';
 import { animKey, ensureCharacterAnimations, readMovementInput } from './characterAnims';
 import { loadTiledMap, type LoadedMap } from './loadTiledMap';
 import { buildFriendSlots } from './friendSlots';
 import { useGameStore } from '@/store/useGameStore';
-import { gameEventBus } from '@/lib/gameEventBus';
-import { runCheckpoint } from './runCheckpoint';
-import { CP1_119, CP2_FIRE_ALARM, CP3_DOOR_TEMP } from './act1Checkpoints';
+import { useSessionStore } from '@/store/useSessionStore';
+import { useShoutMissionStore } from '@/store/useShoutMissionStore';
+import { useAlarmMissionStore } from '@/store/useAlarmMissionStore';
+import { useDoorMissionStore } from '@/store/useDoorMissionStore';
+import { showSpeechBubble } from './speechBubble';
 
-// 맵 *.json 의 spawn 레이어에서 이름으로 좌표 lookup. 못 찾으면 throw.
-// MapMaker UI 로 수정한 spawn 변경이 즉시 반영됨 (spawns.ts 우회).
 const requireMapSpawn = (
   map: LoadedMap,
   name: string
@@ -26,21 +29,41 @@ const requireMapSpawn = (
 const PLAYER_SPEED = 180;
 const PLAYER_DEPTH = 100;
 const NPC_DEPTH = 90;
+const INTERACTION_RADIUS = 80;
+const RECRUIT_RADIUS = 84;
+const IDLE_LINE_INTERVAL_MIN = 4500;
+const IDLE_LINE_INTERVAL_MAX = 9500;
+const IDLE_LINE_PROXIMITY = 200; // 학생이 이 거리 이내 + 타이머 만료 시 idle 대사
 
 type Friend = {
-  slot: string; // 'npc_friend_1'
+  slot: string;
   characterId: string;
   sprite: Phaser.Physics.Arcade.Sprite;
   homeX: number;
   homeY: number;
-  // 우왕좌왕 wander 상태
   wanderTargetX: number;
   wanderTargetY: number;
-  wanderTimer: number; // ms 단위 카운트다운
+  wanderTimer: number;
   lastDir: 'down' | 'up' | 'left' | 'right';
+  recruited: boolean;
+  marker?: Phaser.GameObjects.Container;
+  idleLineTimer: number;
+  lastIdleIndex: number;
 };
 
-type InteractionZone = {
+type ItemZone = {
+  spawnName: string;
+  cx: number;
+  cy: number;
+  radius: number;
+  active: boolean;
+  used: boolean;
+  marker?: Phaser.GameObjects.Container;
+  sprite?: Phaser.GameObjects.Container; // placeholder graphics (휴대폰/손수건)
+  onTrigger: () => Promise<void>;
+};
+
+type CheckpointZone = {
   spawnName: string;
   cx: number;
   cy: number;
@@ -51,51 +74,53 @@ type InteractionZone = {
   onTrigger: () => Promise<void>;
 };
 
-const INTERACTION_RADIUS = 80;
+type NearbyTarget =
+  | { kind: 'item'; ref: ItemZone }
+  | { kind: 'cp'; ref: CheckpointZone }
+  | { kind: 'friend'; ref: Friend }
+  | null;
 
 export default class Act1LibraryScene extends Phaser.Scene {
   private map!: LoadedMap;
   private player!: Phaser.Physics.Arcade.Sprite;
-  private playerCharacterId = 'puppy'; // fallback, will be overridden
+  private playerCharacterId = 'puppy';
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private friends: Friend[] = [];
   private lastDir: 'down' | 'up' | 'left' | 'right' = 'down';
-  private currentCp = 0;             // 0 = 시작 전, 1 = CP1, ...
-  private movementLocked = false;     // 체크포인트 진행 중에는 움직임 잠금
-  private fireGlow?: Phaser.GameObjects.Graphics; // 옆 교실 불빛 효과
-  private zones: InteractionZone[] = [];
-  private nearbyZone: InteractionZone | null = null;
+  private currentCp = 0;
+  private movementLocked = false;
+  private fireGlow?: Phaser.GameObjects.Graphics;
+  private items: ItemZone[] = [];
+  private cpZones: CheckpointZone[] = [];
+  private nearby: NearbyTarget = null;
   private interactionKey!: Phaser.Input.Keyboard.Key;
-  private followerMode = false;       // 학생이 출구 근처 다가가면 ON
+  private followerMode = false;
+  private cp1Triggered = false;
 
   constructor() {
     super('Act1LibraryScene');
   }
 
   create() {
-    // 학생이 고른 캐릭터 (없으면 fallback 첫 번째)
+    // 도서관에 진입할 때마다 인벤토리 초기화 (한 막 단위)
+    useSessionStore.getState().reset();
+
     const selected = useGameStore.getState().selectedCharacter ?? CHARACTER_IDS[0];
     this.playerCharacterId = selected;
 
-    // 1. 맵 로드
     this.map = loadTiledMap(this, 'act1_library');
-
-    // 2. 캐릭터 애니메이션 등록
     ensureCharacterAnimations(this, CHARACTER_IDS);
 
-    // 3. 플레이어 spawn (맵 JSON 에서 lookup — MapMaker UI 변경 즉시 반영)
+    // 플레이어
     const playerSpawn = requireMapSpawn(this.map, 'playerspawn');
     this.player = this.physics.add.sprite(playerSpawn.x, playerSpawn.y, this.playerCharacterId, 0);
     this.player.setDepth(PLAYER_DEPTH);
     this.player.setCollideWorldBounds(true);
-    // Phaser body 가 sprite 의 frame size 를 그대로 쓰면 너무 큼 — 발 근처 작은 박스로
     this.player.body!.setSize(28, 16);
     this.player.body!.setOffset(10, 46);
-
-    // walls 충돌
     this.physics.add.collider(this.player, this.map.collisionBodies);
 
-    // 4. 친구 5명 spawn (학생이 안 고른 5마리 매핑)
+    // 친구 5명 — 흩어진 위치, 시작 시 모두 unrecruited
     const slots = buildFriendSlots(this.playerCharacterId);
     for (const [slotName, characterId] of Object.entries(slots)) {
       const sp = requireMapSpawn(this.map, slotName);
@@ -103,8 +128,6 @@ export default class Act1LibraryScene extends Phaser.Scene {
       sprite.setDepth(NPC_DEPTH);
       sprite.body!.setSize(28, 16);
       sprite.body!.setOffset(10, 46);
-      // setImmovable(true) 빼면 walls 와 충돌 시 위치 조정 정상 작동.
-      // 학생-NPC 충돌은 등록 안 함 (서로 통과).
       this.physics.add.collider(sprite, this.map.collisionBodies);
       this.friends.push({
         slot: slotName,
@@ -116,24 +139,30 @@ export default class Act1LibraryScene extends Phaser.Scene {
         wanderTargetY: sp.y,
         wanderTimer: Math.random() * 1500,
         lastDir: 'down',
+        recruited: false,
+        idleLineTimer: 1500 + Math.random() * 3000,
+        lastIdleIndex: -1,
       });
     }
 
-    // 5. 카메라
+    // 카메라
     this.cameras.main.setBounds(0, 0, this.map.widthPx, this.map.heightPx);
     this.physics.world.setBounds(0, 0, this.map.widthPx, this.map.heightPx);
     this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
-    this.cameras.main.setZoom(1.4); // 가까이 줌인 (캐릭터가 더 크게 보임)
+    this.cameras.main.setZoom(1.4);
 
-    // 6. 입력
     this.cursors = this.input.keyboard!.createCursorKeys();
     this.interactionKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
 
-    // CP2/CP3 인터랙션 zone 등록 (CP1 끝나면 활성화)
-    this.registerZone('item_fire_alarm', () => this.startCp2());
-    this.registerZone('item_exit_door', () => this.startCp3());
+    // 인벤토리 아이템 (휴대폰, 손수건) — placeholder graphics
+    this.registerItem('item_phone', 'phone', () => this.pickupPhone());
+    this.registerItem('item_handkerchief', 'handkerchief', () => this.pickupHandkerchief());
 
-    // 7. 옆 교실 불빛 효과 (item_classroom_window 위치에서 빨갛게 펄스)
+    // CP zones (CP2/CP3) — CP2 는 CP1 후 활성, CP3 는 CP2+친구5명 모집 후 활성
+    this.registerCpZone('item_fire_alarm', () => this.startCp2());
+    this.registerCpZone('item_exit_door', () => this.startCp3());
+
+    // 옆 교실 불빛
     const windowSpawn = this.map.spawns.get('item_classroom_window');
     if (windowSpawn) {
       this.fireGlow = this.add.graphics();
@@ -157,16 +186,74 @@ export default class Act1LibraryScene extends Phaser.Scene {
       });
     }
 
-    // 8. CP1 자동 트리거 (게임 시작 1.5초 후)
-    this.time.delayedCall(1500, () => this.startCp1());
+    // 시작 안내 — 첫 줄로 짧게
+    this.time.delayedCall(800, () => {
+      showSpeechBubble(this, this.player, '휴대폰부터 챙기고 친구들 모아야 해!', { holdMs: 2400 });
+    });
   }
 
-  private registerZone(spawnName: string, onTrigger: () => Promise<void>) {
+  // ───────── 아이템 placeholder 그래픽 + zone 등록 ─────────
+
+  private registerItem(spawnName: string, kind: 'phone' | 'handkerchief', onPick: () => Promise<void>) {
     const sp = this.map.spawns.get(spawnName);
     if (!sp) return;
     const cx = sp.x + sp.width / 2;
     const cy = sp.y + sp.height / 2;
-    this.zones.push({
+    const sprite = this.createItemSprite(cx, cy, kind);
+    this.items.push({
+      spawnName,
+      cx,
+      cy,
+      radius: INTERACTION_RADIUS,
+      active: true,
+      used: false,
+      sprite,
+      onTrigger: onPick,
+    });
+  }
+
+  private createItemSprite(cx: number, cy: number, kind: 'phone' | 'handkerchief'): Phaser.GameObjects.Container {
+    const g = this.add.graphics();
+    if (kind === 'phone') {
+      // 검은 사각형 + 화면
+      g.fillStyle(0x1f2937, 1);
+      g.fillRoundedRect(-9, -14, 18, 28, 3);
+      g.fillStyle(0x60a5fa, 1);
+      g.fillRect(-7, -11, 14, 19);
+      g.fillStyle(0x1f2937, 1);
+      g.fillCircle(0, 11, 1.5);
+    } else {
+      // 흰 천 사각형 (살짝 접힌 모양)
+      g.fillStyle(0xfef3c7, 1);
+      g.fillRoundedRect(-12, -10, 24, 20, 3);
+      g.lineStyle(1, 0xb45309, 1);
+      g.strokeRoundedRect(-12, -10, 24, 20, 3);
+      g.lineBetween(-8, -10, -8, 10);
+      g.lineBetween(0, -10, 0, 10);
+      g.lineBetween(8, -10, 8, 10);
+    }
+    const container = this.add.container(cx, cy, [g]);
+    container.setDepth(70);
+    // 살짝 떠다니는 효과
+    this.tweens.add({
+      targets: container,
+      y: cy - 4,
+      duration: 900,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    });
+    return container;
+  }
+
+  // ───────── CP zone 등록 ─────────
+
+  private registerCpZone(spawnName: string, onTrigger: () => Promise<void>) {
+    const sp = this.map.spawns.get(spawnName);
+    if (!sp) return;
+    const cx = sp.x + sp.width / 2;
+    const cy = sp.y + sp.height / 2;
+    this.cpZones.push({
       spawnName,
       cx,
       cy,
@@ -177,76 +264,165 @@ export default class Act1LibraryScene extends Phaser.Scene {
     });
   }
 
-  private createMarker(cx: number, cy: number): Phaser.GameObjects.Container {
+  // ───────── 마커 ─────────
+
+  private createMarker(label: string = 'A'): Phaser.GameObjects.Container {
     const ring = this.add.graphics();
     ring.lineStyle(3, 0xfbbf24, 1);
     ring.strokeCircle(0, 0, 18);
     ring.fillStyle(0xfbbf24, 0.85);
     ring.fillCircle(0, 0, 14);
-    const text = this.add.text(0, 0, 'A', {
+    const text = this.add.text(0, 0, label, {
       fontSize: '18px',
       fontStyle: 'bold',
       color: '#1c1917',
       fontFamily: 'Pretendard, sans-serif',
     });
     text.setOrigin(0.5, 0.5);
-    const container = this.add.container(cx, cy - 50, [ring, text]);
+    const container = this.add.container(0, 0, [ring, text]);
     container.setDepth(500);
-    // 부드러운 펄스 + 위아래 살짝 떠다님
-    this.tweens.add({
-      targets: container,
-      y: cy - 56,
-      duration: 700,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
-    });
     return container;
   }
 
-  private updateMarkers() {
-    if (!this.player) return;
-    let nearest: InteractionZone | null = null;
-    let nearestDist = Infinity;
-    for (const z of this.zones) {
-      if (!z.active || z.used) {
-        if (z.marker) {
-          z.marker.destroy();
-          z.marker = undefined;
-        }
-        continue;
-      }
-      // 마커가 없으면 생성
-      if (!z.marker) {
-        z.marker = this.createMarker(z.cx, z.cy);
-      }
-      const d = Phaser.Math.Distance.Between(this.player.x, this.player.y, z.cx, z.cy);
-      if (d < z.radius && d < nearestDist) {
-        nearestDist = d;
-        nearest = z;
-      }
-    }
-    // 가장 가까운 활성 zone 강조 (마커 크게)
-    for (const z of this.zones) {
-      if (z.marker) {
-        z.marker.setScale(z === nearest ? 1.25 : 0.9);
-      }
-    }
-    this.nearbyZone = nearest;
+  private ensureMarker(host: { marker?: Phaser.GameObjects.Container }, label: string = 'A') {
+    if (!host.marker) host.marker = this.createMarker(label);
   }
 
-  private async runZoneTrigger(zone: InteractionZone) {
-    if (zone.used || this.movementLocked) return;
-    zone.used = true;
+  private destroyMarker(host: { marker?: Phaser.GameObjects.Container }) {
+    if (host.marker) {
+      host.marker.destroy();
+      host.marker = undefined;
+    }
+  }
+
+  // ───────── 가장 가까운 인터랙션 대상 결정 ─────────
+
+  private updateNearby() {
+    if (!this.player) return;
+    let best: NearbyTarget = null;
+    let bestDist = Infinity;
+
+    // items (휴대폰/손수건)
+    for (const z of this.items) {
+      if (!z.active || z.used) {
+        this.destroyMarker(z);
+        continue;
+      }
+      this.ensureMarker(z, 'A');
+      const d = Phaser.Math.Distance.Between(this.player.x, this.player.y, z.cx, z.cy);
+      if (d < z.radius && d < bestDist) {
+        bestDist = d;
+        best = { kind: 'item', ref: z };
+      }
+    }
+
+    // CP zones
+    for (const z of this.cpZones) {
+      if (!z.active || z.used) {
+        this.destroyMarker(z);
+        continue;
+      }
+      this.ensureMarker(z, 'A');
+      const d = Phaser.Math.Distance.Between(this.player.x, this.player.y, z.cx, z.cy);
+      if (d < z.radius && d < bestDist) {
+        bestDist = d;
+        best = { kind: 'cp', ref: z };
+      }
+    }
+
+    // 친구 (unrecruited)
+    for (const f of this.friends) {
+      if (f.recruited) {
+        this.destroyMarker(f);
+        continue;
+      }
+      this.ensureMarker(f, '?');
+      const d = Phaser.Math.Distance.Between(this.player.x, this.player.y, f.sprite.x, f.sprite.y);
+      if (d < RECRUIT_RADIUS && d < bestDist) {
+        bestDist = d;
+        best = { kind: 'friend', ref: f };
+      }
+    }
+
+    // marker 위치 + 강조 갱신
+    for (const z of this.items) {
+      if (z.marker) {
+        z.marker.setPosition(z.cx, z.cy - 50);
+        z.marker.setScale(best?.kind === 'item' && best.ref === z ? 1.25 : 0.85);
+      }
+    }
+    for (const z of this.cpZones) {
+      if (z.marker) {
+        z.marker.setPosition(z.cx, z.cy - 50);
+        z.marker.setScale(best?.kind === 'cp' && best.ref === z ? 1.25 : 0.85);
+      }
+    }
+    for (const f of this.friends) {
+      if (f.marker) {
+        f.marker.setPosition(f.sprite.x, f.sprite.y - 50);
+        f.marker.setScale(best?.kind === 'friend' && best.ref === f ? 1.25 : 0.85);
+      }
+    }
+
+    this.nearby = best;
+  }
+
+  // ───────── 인터랙션 트리거 ─────────
+
+  private async runItemPickup(z: ItemZone) {
+    if (z.used || this.movementLocked) return;
+    z.used = true;
+    if (z.sprite) {
+      this.tweens.add({
+        targets: z.sprite,
+        alpha: 0,
+        scale: 1.4,
+        duration: 250,
+        onComplete: () => z.sprite?.destroy(),
+      });
+    }
+    this.destroyMarker(z);
+    await z.onTrigger();
+  }
+
+  private async runCpZone(z: CheckpointZone) {
+    if (z.used || this.movementLocked) return;
+    z.used = true;
     this.movementLocked = true;
     this.player.setVelocity(0, 0);
-    if (zone.marker) {
-      zone.marker.destroy();
-      zone.marker = undefined;
-    }
-    await zone.onTrigger();
+    this.destroyMarker(z);
+    await z.onTrigger();
     this.movementLocked = false;
   }
+
+  private recruitFriend(f: Friend) {
+    if (f.recruited || this.movementLocked) return;
+    f.recruited = true;
+    this.destroyMarker(f);
+    const p = getPersonality(f.characterId);
+    showSpeechBubble(this, f.sprite, p.recruitLine, { holdMs: 2200 });
+    // 모집 직후 패닉 wander → 학생 근처 wander 로 자연 전환 (home 갱신은 update 에서)
+    f.wanderTimer = 200; // 즉시 새 target 잡게
+  }
+
+  // ───────── 줍기 핸들러 ─────────
+
+  private async pickupPhone() {
+    useSessionStore.getState().pickupPhone();
+    showSpeechBubble(this, this.player, '휴대폰을 챙겼다!', { holdMs: 1600 });
+    // CP1 자동 트리거 (휴대폰 줍기 = 119 신고 가능)
+    if (!this.cp1Triggered) {
+      this.cp1Triggered = true;
+      this.time.delayedCall(900, () => this.startCp1());
+    }
+  }
+
+  private async pickupHandkerchief() {
+    useSessionStore.getState().pickupHandkerchief();
+    showSpeechBubble(this, this.player, '손수건을 챙겼다.', { holdMs: 1600 });
+  }
+
+  // ───────── CP 시작 ─────────
 
   private startCp1() {
     if (this.currentCp >= 1) return;
@@ -254,79 +430,94 @@ export default class Act1LibraryScene extends Phaser.Scene {
     this.movementLocked = true;
     this.player.setVelocity(0, 0);
 
-    void runCheckpoint(CP1_119, (remaining) => {
-      gameEventBus.emit('checkpoint:countdown', { remaining });
-    }).then(() => {
-      useGameStore.getState().recordCheckpoint(1, 0, 'success');
-      useGameStore.getState().advanceCheckpoint(1);
-      this.movementLocked = false;
-      // CP2 인터랙션 활성화
-      const fireZone = this.zones.find((z) => z.spawnName === 'item_fire_alarm');
-      if (fireZone) fireZone.active = true;
+    // 막 시간 추적 시작 (1막 첫 미션 = 1단계 외치기 시작 시점)
+    useGameStore.getState().startRun();
+
+    showSpeechBubble(this, this.player, '"불이야!" 외쳐서 모두에게 알려야 해!', { holdMs: 2200 });
+    this.time.delayedCall(2300, () => {
+      useShoutMissionStore.getState().show((_result, missCount) => {
+        if (missCount > 0) {
+          useGameStore.getState().addPenaltyMs(missCount * 2000);
+        }
+        useGameStore.getState().recordCheckpoint(1, 0, 'success');
+        useGameStore.getState().advanceCheckpoint(1);
+        this.movementLocked = false;
+        // CP2 (경보기) 활성화
+        const fireZone = this.cpZones.find((z) => z.spawnName === 'item_fire_alarm');
+        if (fireZone) fireZone.active = true;
+        showSpeechBubble(this, this.player, '이제 화재경보기를 누르자!', { holdMs: 2200 });
+      });
     });
   }
 
   private async startCp2() {
     if (this.currentCp >= 2) return;
     this.currentCp = 2;
-    await runCheckpoint(CP2_FIRE_ALARM, (remaining) => {
-      gameEventBus.emit('checkpoint:countdown', { remaining });
+    await new Promise<void>((resolve) => {
+      useAlarmMissionStore.getState().show((_result, weakAttempts, breakAttempts) => {
+        const penaltyMs = weakAttempts * 1000 + breakAttempts * 3000;
+        if (penaltyMs > 0) useGameStore.getState().addPenaltyMs(penaltyMs);
+        resolve();
+      });
     });
-    // 사이렌 효과 — 카메라 빨간 플래시 2번
     this.cameras.main.flash(400, 255, 60, 60);
     this.time.delayedCall(500, () => this.cameras.main.flash(400, 255, 60, 60));
     useGameStore.getState().recordCheckpoint(1, 1, 'success');
     useGameStore.getState().advanceCheckpoint(1);
-    // CP3 인터랙션 활성화
-    const doorZone = this.zones.find((z) => z.spawnName === 'item_exit_door');
-    if (doorZone) doorZone.active = true;
+    // CP3 활성 — 친구 5명 모두 모집된 경우만. update 에서 매 프레임 검사.
+    this.tryActivateExitDoor();
   }
 
   private async startCp3() {
     if (this.currentCp >= 3) return;
     this.currentCp = 3;
-    // CP3 는 손등 vs 손바닥 — 오답 시 화상 효과를 위해 CP 결과를 보고 시각 처리
-    // runCheckpoint 가 정답까지 반복하므로 마지막은 항상 정답. 오답 효과는 onWrong 대사 후 별도.
-    // 단순화: 첫 응답이 손바닥/발차기였는지 추적하지 않고, 정답 후 차가운 문 효과만 처리.
-    await runCheckpoint(CP3_DOOR_TEMP, (remaining) => {
-      gameEventBus.emit('checkpoint:countdown', { remaining });
+    showSpeechBubble(this, this.player, '문이 뜨거운지 손등으로 확인해야 해!', { holdMs: 2000 });
+    await new Promise<void>((resolve) => setTimeout(resolve, 2100));
+    await new Promise<void>((resolve) => {
+      useDoorMissionStore.getState().show((palmTaps, resets) => {
+        const penaltyMs = palmTaps * 1000 + resets * 5000;
+        if (penaltyMs > 0) useGameStore.getState().addPenaltyMs(penaltyMs);
+        resolve();
+      });
     });
     useGameStore.getState().recordCheckpoint(1, 2, 'success');
     useGameStore.getState().advanceCheckpoint(1);
-    // 페이드아웃 → corridor scene 전환
+    // 다음 맵 전환 직전에만 친구들이 학생을 따라옴
+    this.followerMode = true;
     this.cameras.main.fadeOut(1200, 0, 0, 0);
     this.time.delayedCall(1300, () => {
       this.scene.start('Act1CorridorScene');
     });
   }
 
+  // CP2 통과 + 친구 5명 모두 모집된 경우에만 출구 문 활성
+  private tryActivateExitDoor() {
+    if (this.currentCp < 2) return;
+    const allRecruited = this.friends.every((f) => f.recruited);
+    if (!allRecruited) return;
+    const door = this.cpZones.find((z) => z.spawnName === 'item_exit_door');
+    if (door && !door.active) {
+      door.active = true;
+      showSpeechBubble(this, this.player, '다 모였다! 이제 출구로 가자.', { holdMs: 2200 });
+    }
+  }
+
+  // ───────── update ─────────
+
   update(time: number, delta: number) {
     if (!this.player) return;
 
-    // 인터랙션 마커 갱신
-    this.updateMarkers();
+    this.updateNearby();
 
-    // A 버튼 (Space) JustDown — 가까운 zone 트리거
-    if (
-      !this.movementLocked &&
-      this.nearbyZone &&
-      Phaser.Input.Keyboard.JustDown(this.interactionKey)
-    ) {
-      void this.runZoneTrigger(this.nearbyZone);
-    }
+    // CP3 활성 조건 매 프레임 검사 (친구 모두 모집됐는지)
+    this.tryActivateExitDoor();
 
-    // 학생이 출구 zone 근처 가면 follower 모드 ON (한 번 켜지면 유지)
-    if (!this.followerMode && this.currentCp >= 1) {
-      const exitZone = this.zones.find((z) => z.spawnName === 'item_exit_door');
-      if (exitZone) {
-        const d = Phaser.Math.Distance.Between(
-          this.player.x,
-          this.player.y,
-          exitZone.cx,
-          exitZone.cy
-        );
-        if (d < 280) this.followerMode = true;
-      }
+    // A 버튼 — nearby 종류에 따라 디스패치
+    if (!this.movementLocked && Phaser.Input.Keyboard.JustDown(this.interactionKey) && this.nearby) {
+      const t = this.nearby;
+      if (t.kind === 'item') void this.runItemPickup(t.ref);
+      else if (t.kind === 'cp') void this.runCpZone(t.ref);
+      else if (t.kind === 'friend') this.recruitFriend(t.ref);
     }
 
     // 학생 이동
@@ -336,7 +527,6 @@ export default class Act1LibraryScene extends Phaser.Scene {
     } else {
       const { vx, vy, dir } = readMovementInput(this.cursors, PLAYER_SPEED);
       this.player.setVelocity(vx, vy);
-
       if (dir) {
         this.lastDir = dir;
         const key = animKey(this.playerCharacterId, dir);
@@ -351,21 +541,53 @@ export default class Act1LibraryScene extends Phaser.Scene {
     }
 
     // 친구들 — 모드별 분기
-    const panicMode = this.movementLocked && this.currentCp >= 1;
+    const cpInProgress = this.movementLocked && this.currentCp >= 1;
     for (let i = 0; i < this.friends.length; i++) {
       const f = this.friends[i];
-      if (panicMode) this.tickPanic(f, delta);
-      else if (this.followerMode) this.tickFollower(f, i, delta);
-      else this.tickWander(f, delta);
+
+      // 모집된 친구: home 을 학생 근처로 매 프레임 갱신 (자연스럽게 따라옴)
+      if (f.recruited && !this.followerMode) {
+        f.homeX = this.player.x;
+        f.homeY = this.player.y;
+      }
+
+      if (this.followerMode) this.tickFollower(f, i, delta);
+      else if (cpInProgress) this.tickPanic(f, delta);
+      else if (f.recruited) this.tickWander(f, delta, 110); // 학생 근처 wander, 약간 빠름
+      else this.tickPanic(f, delta); // unrecruited = 패닉
+
+      // idle 대사 — 학생 근처에 있을 때만, 인터벌마다
+      if (!cpInProgress) {
+        f.idleLineTimer -= delta;
+        if (f.idleLineTimer <= 0) {
+          const d = Phaser.Math.Distance.Between(this.player.x, this.player.y, f.sprite.x, f.sprite.y);
+          if (d < IDLE_LINE_PROXIMITY) {
+            const { line, index } = pickIdleLine(f.characterId, f.lastIdleIndex);
+            f.lastIdleIndex = index;
+            // 모집 후엔 followLines 도 가끔 섞기
+            const useFollow = f.recruited && Math.random() < 0.5;
+            if (useFollow) {
+              const fl = getPersonality(f.characterId).followLines;
+              if (fl.length > 0) {
+                showSpeechBubble(this, f.sprite, fl[Math.floor(Math.random() * fl.length)]);
+              } else {
+                showSpeechBubble(this, f.sprite, line);
+              }
+            } else {
+              showSpeechBubble(this, f.sprite, line);
+            }
+          }
+          f.idleLineTimer = IDLE_LINE_INTERVAL_MIN + Math.random() * (IDLE_LINE_INTERVAL_MAX - IDLE_LINE_INTERVAL_MIN);
+        }
+      }
     }
   }
 
-  // 패닉 모드 — 체크포인트 진행 중. 현재 위치에서 작은 반경 빠른 random walk
-  // (발 동동 구르는 느낌). home 으로 reset 하지 않음 — 우왕좌왕 흐름 유지.
+  // ───────── 친구 동작 ─────────
+
   private tickPanic(f: Friend, delta: number) {
     f.wanderTimer -= delta;
     if (f.wanderTimer <= 0) {
-      // 현재 위치 기준 ±16px 안에서 새 target
       f.wanderTargetX = f.sprite.x + (Math.random() - 0.5) * 32;
       f.wanderTargetY = f.sprite.y + (Math.random() - 0.5) * 32;
       f.wanderTimer = 200 + Math.random() * 400;
@@ -373,29 +595,24 @@ export default class Act1LibraryScene extends Phaser.Scene {
     this.moveTowards(f, f.wanderTargetX, f.wanderTargetY, 80);
   }
 
-  // 우왕좌왕 — home 주위 작은 반경 안에서 random walk.
-  private tickWander(f: Friend, delta: number) {
+  private tickWander(f: Friend, delta: number, speed: number = 50) {
     f.wanderTimer -= delta;
     if (f.wanderTimer <= 0) {
-      // 새 target 정함. home 주변 ±48px (1.5 tile) 안.
-      // 가끔 정지 상태도 (target = 현재 위치)
-      const stayStill = Math.random() < 0.3;
+      const stayStill = Math.random() < 0.25;
       if (stayStill) {
         f.wanderTargetX = f.sprite.x;
         f.wanderTargetY = f.sprite.y;
-        f.wanderTimer = 600 + Math.random() * 800; // 짧게 정지
+        f.wanderTimer = 600 + Math.random() * 800;
       } else {
         f.wanderTargetX = f.homeX + (Math.random() - 0.5) * 96;
         f.wanderTargetY = f.homeY + (Math.random() - 0.5) * 96;
-        f.wanderTimer = 1200 + Math.random() * 1500;
+        f.wanderTimer = 1000 + Math.random() * 1200;
       }
     }
-    this.moveTowards(f, f.wanderTargetX, f.wanderTargetY, 50);
+    this.moveTowards(f, f.wanderTargetX, f.wanderTargetY, speed);
   }
 
-  // 학생을 따라옴. 학생 뒤에 일정 거리 유지.
-  private tickFollower(f: Friend, idx: number, delta: number) {
-    // 학생 lastDir 의 반대 방향으로 떨어진 위치
+  private tickFollower(f: Friend, idx: number, _delta: number) {
     const offsets: Record<string, { x: number; y: number }> = {
       down: { x: 0, y: -1 },
       up: { x: 0, y: 1 },
@@ -403,9 +620,9 @@ export default class Act1LibraryScene extends Phaser.Scene {
       right: { x: -1, y: 0 },
     };
     const off = offsets[this.lastDir];
-    const tier = Math.floor(idx / 2); // 0,0,1,1,2 — 두 명씩 같은 거리
+    const tier = Math.floor(idx / 2);
     const distance = 56 + tier * 40;
-    const sideOffset = (idx % 2 === 0 ? -1 : 1) * 24; // 좌우로 살짝 분산
+    const sideOffset = (idx % 2 === 0 ? -1 : 1) * 24;
     const perp = this.lastDir === 'down' || this.lastDir === 'up'
       ? { x: 1, y: 0 }
       : { x: 0, y: 1 };
@@ -414,7 +631,6 @@ export default class Act1LibraryScene extends Phaser.Scene {
     this.moveTowards(f, targetX, targetY, 130);
   }
 
-  // 공통 이동: target 으로 가다가 가까우면 멈춤. walk anim 재생 + 방향 갱신.
   private moveTowards(f: Friend, tx: number, ty: number, speed: number) {
     const dx = tx - f.sprite.x;
     const dy = ty - f.sprite.y;

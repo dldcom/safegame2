@@ -272,32 +272,30 @@ export default class Act1PlaygroundScene extends Phaser.Scene {
       }
     }
 
-    // 친구들 — CP6 진행 중이 아니면 follower (학생 따라옴)
-    // CP6 진행 중엔 정렬 tween 이 처리하니 update 에선 건들지 않음
+    // 친구들 — 평상시 wander, CP6 진행 중엔 정렬 tween 이 처리하니 update 에선 건들지 않음
+    // (1막은 운동장에서 끝 → follower 시점 없음. 점호가 모이게 함)
     if (!this.cp6Triggered) {
-      for (let i = 0; i < this.friends.length; i++) {
-        this.tickFollower(this.friends[i], i, delta);
+      for (const f of this.friends) {
+        this.tickWander(f, delta);
       }
     }
   }
 
-  private tickFollower(f: Friend, idx: number, _delta: number) {
-    const offsets: Record<string, { x: number; y: number }> = {
-      down: { x: 0, y: -1 },
-      up: { x: 0, y: 1 },
-      left: { x: 1, y: 0 },
-      right: { x: -1, y: 0 },
-    };
-    const off = offsets[this.lastDir];
-    const tier = Math.floor(idx / 2);
-    const distance = 56 + tier * 40;
-    const sideOffset = (idx % 2 === 0 ? -1 : 1) * 24;
-    const perp = this.lastDir === 'down' || this.lastDir === 'up'
-      ? { x: 1, y: 0 }
-      : { x: 0, y: 1 };
-    const targetX = this.player.x + off.x * distance + perp.x * sideOffset;
-    const targetY = this.player.y + off.y * distance + perp.y * sideOffset;
-    this.moveTowards(f, targetX, targetY, 130);
+  private tickWander(f: Friend, delta: number) {
+    f.wanderTimer -= delta;
+    if (f.wanderTimer <= 0) {
+      const stayStill = Math.random() < 0.3;
+      if (stayStill) {
+        f.wanderTargetX = f.sprite.x;
+        f.wanderTargetY = f.sprite.y;
+        f.wanderTimer = 600 + Math.random() * 800;
+      } else {
+        f.wanderTargetX = f.homeX + (Math.random() - 0.5) * 96;
+        f.wanderTargetY = f.homeY + (Math.random() - 0.5) * 96;
+        f.wanderTimer = 1200 + Math.random() * 1500;
+      }
+    }
+    this.moveTowards(f, f.wanderTargetX, f.wanderTargetY, 50);
   }
 
   private moveTowards(f: Friend, tx: number, ty: number, speed: number) {

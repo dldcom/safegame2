@@ -5,8 +5,8 @@
 import {
   useDialogueStore,
   type DialogueLine,
-  type DialogueChoice,
 } from '@/store/useDialogueStore';
+import { useQuestionStore } from '@/store/useQuestionStore';
 
 export type CheckpointStep = {
   // 질문 (선택지 포함)
@@ -42,10 +42,29 @@ export const showLines = (lines: DialogueLine[]): Promise<void> =>
     useDialogueStore.getState().show(lines, () => resolve());
   });
 
-// 단일 선택지 질문 — 사용자가 고른 value 또는 null (close).
+// Fisher-Yates 셔플 (원본 보존, 새 배열 반환).
+const shuffle = <T,>(arr: readonly T[]): T[] => {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
+// 단일 선택지 질문 — 별도 가운데 모달.
+// 매번 choices 셔플해서 정답 위치 무작위. carryover 방지는 store 의 OPEN_LOCK_MS.
 export const showQuestion = (question: DialogueLine): Promise<string | null> =>
   new Promise((resolve) => {
-    useDialogueStore.getState().show([question], (value) => resolve(value));
+    const choices = question.choices ?? [];
+    useQuestionStore.getState().show(
+      {
+        speaker: question.speaker,
+        prompt: question.text,
+        choices: shuffle(choices),
+      },
+      (value) => resolve(value)
+    );
   });
 
 // 시간 카운트다운 — 진행 중 question Promise 가 끝나면 cancel.
@@ -108,7 +127,7 @@ const runStep = async (
       },
       () => {
         timedOut = true;
-        useDialogueStore.getState().close();
+        useQuestionStore.getState().close();
       }
     );
 

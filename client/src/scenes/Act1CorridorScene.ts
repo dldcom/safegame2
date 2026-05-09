@@ -12,6 +12,8 @@ import { useTouchControlsStore } from '@/store/useTouchControlsStore';
 import { gameEventBus } from '@/lib/gameEventBus';
 import { runCheckpoint, showLines, showQuestion } from './runCheckpoint';
 import { CP4_LOW_POSTURE } from './act1Checkpoints';
+import { showSpeechBubble } from './speechBubble';
+import { useSessionStore } from '@/store/useSessionStore';
 
 const PLAYER_SPEED = 180;
 const PLAYER_DEPTH = 100;
@@ -48,6 +50,19 @@ type InteractionZone = {
   onTrigger: () => Promise<void>;
 };
 
+type DoorZone = {
+  spawnName: string;
+  cx: number;
+  cy: number;
+  radius: number;
+  active: boolean;
+  used: boolean;
+  isCool: boolean; // 1개만 true (시원한 문 = 통과 가능)
+  marker?: Phaser.GameObjects.Container;
+  spriteImg?: Phaser.GameObjects.Image;
+  hotMark?: Phaser.GameObjects.Graphics;
+};
+
 const requireMapSpawn = (map: LoadedMap, name: string) => {
   const sp = map.spawns.get(name);
   if (!sp) throw new Error(`spawn "${name}" not found in corridor map`);
@@ -62,6 +77,7 @@ export default class Act1CorridorScene extends Phaser.Scene {
   private friends: Friend[] = [];
   private lastDir: 'down' | 'up' | 'left' | 'right' = 'down';
   private currentCp = 0; // 0 = 시작 전, 4, 5
+  private transitioning = false; // 마지막 CP 통과 후 다음 맵 전환 시점에 ON (follower)
   private movementLocked = false;
   private cp4Done = false; // CP4 정답 후부터 자세 메커니즘 활성
   private interactionKey!: Phaser.Input.Keyboard.Key;
@@ -69,6 +85,9 @@ export default class Act1CorridorScene extends Phaser.Scene {
   private stairsZone: InteractionZone | null = null;
   private nearbyInteraction: InteractionZone | null = null;
   private elevatorRefused = false;
+  private doors: DoorZone[] = [];
+  private nearbyDoor: DoorZone | null = null;
+  private coolDoorPassed = false;
   // 자세 메커니즘 — 코 가림 그래픽, 연기 게이지, 콜록 타이머
   private crouchHand?: Phaser.GameObjects.Graphics;
   private vignette?: Phaser.GameObjects.Rectangle;
@@ -153,11 +172,40 @@ export default class Act1CorridorScene extends Phaser.Scene {
     this.vignette.setScrollFactor(0);
     this.vignette.setDepth(1500);
 
-    // CP5 zone 등록 (CP4 끝나면 활성화)
+    // CP5 zone 등록 (cool 문 통과 후 활성화)
     this.setupCp5Zones();
+
+    // 손등 체크 문 3개 등록 (CP4 정답 후 활성화). 1개만 시원함 — 무작위 결정.
+    this.setupDoors();
 
     // CP4 자동 트리거 (1.2초 후)
     this.time.delayedCall(1200, () => this.startCp4());
+  }
+
+  private setupDoors() {
+    const names = ['door_a', 'door_b', 'door_c'];
+    const coolIdx = Math.floor(Math.random() * names.length);
+    for (let i = 0; i < names.length; i++) {
+      const sp = this.map.spawns.get(names[i]);
+      if (!sp) continue;
+      const cx = sp.x + sp.width / 2;
+      const cy = sp.y + sp.height / 2;
+      // door_safe 텍스처를 placeholder sprite 로 표시 (BootScene 에 이미 로드됨)
+      let img: Phaser.GameObjects.Image | undefined;
+      if (this.textures.exists('door_safe')) {
+        img = this.add.image(cx, cy, 'door_safe').setDepth(60);
+      }
+      this.doors.push({
+        spawnName: names[i],
+        cx,
+        cy,
+        radius: 80,
+        active: false,
+        used: false,
+        isCool: i === coolIdx,
+        spriteImg: img,
+      });
+    }
   }
 
   private setupCp5Zones() {
@@ -247,6 +295,8 @@ export default class Act1CorridorScene extends Phaser.Scene {
     // CP5 완료
     useGameStore.getState().recordCheckpoint(1, 4, 'success');
     useGameStore.getState().advanceCheckpoint(1);
+    // 다음 맵 전환 직전에만 친구들이 학생을 따라옴
+    this.transitioning = true;
     // 페이드 → playground scene
     this.cameras.main.fadeOut(1200, 0, 0, 0);
     this.time.delayedCall(1300, () => {
@@ -305,7 +355,10 @@ export default class Act1CorridorScene extends Phaser.Scene {
     this.movementLocked = true;
     this.player.setVelocity(0, 0);
 
-    await runCheckpoint(CP4_LOW_POSTURE, (remaining) => {
+    // 손수건 보유 시 정답 대사 분기 (옷자락 → 손수건)
+    const cp = this.cp4WithKerchiefVariant();
+
+    await runCheckpoint(cp, (remaining) => {
       gameEventBus.emit('checkpoint:countdown', { remaining });
     });
 
@@ -315,10 +368,89 @@ export default class Act1CorridorScene extends Phaser.Scene {
     // 자세 메커니즘 활성화 — 이제부터 학생이 B/C 누르고 다녀야 안전
     this.cp4Done = true;
 
-    // CP5 zone 활성화 (엘베 + 계단)
-    if (this.stairsZone) this.stairsZone.active = true;
+    // 손등 체크 문 3개 활성화 (시원한 문 1개 찾아 통과해야 계단실로)
+    for (const d of this.doors) d.active = true;
 
     this.movementLocked = false;
+
+    // 안내 — 손수건 보유 여부에 따라 분기 대사
+    const hasKerchief = useSessionStore.getState().hasHandkerchief;
+    this.time.delayedCall(400, () => {
+      const tip = hasKerchief
+        ? '손수건으로 코·입 가리고, 안전한 문을 찾자!'
+        : '연기 사이로 안전한 문을 찾자!';
+      showSpeechBubble(this, this.player, tip, { holdMs: 2400 });
+    });
+  }
+
+  private async handleDoorCheck(door: DoorZone) {
+    if (door.used || this.movementLocked) return;
+    this.movementLocked = true;
+    this.player.setVelocity(0, 0);
+
+    showSpeechBubble(this, this.player, '손등으로 살짝 대본다...', { holdMs: 1100 });
+    await new Promise<void>((r) => this.time.delayedCall(1200, () => r()));
+
+    if (door.isCool) {
+      showSpeechBubble(this, this.player, '차갑다! 안전해 — 통과!', { holdMs: 1800 });
+      await new Promise<void>((r) => this.time.delayedCall(900, () => r()));
+      // 페이드 → 계단실 통로로 텔포 → fadeIn
+      this.cameras.main.fadeOut(500, 0, 0, 0);
+      await new Promise<void>((r) => this.time.delayedCall(550, () => r()));
+      const after = this.map.spawns.get('spawn_after_door');
+      if (after) {
+        this.player.setPosition(after.x, after.y);
+      }
+      this.cameras.main.fadeIn(500, 0, 0, 0);
+      // 다른 문 비활성 + cool door 통과 표시 + CP5 활성
+      this.coolDoorPassed = true;
+      for (const d of this.doors) {
+        d.used = true;
+        if (d.marker) {
+          d.marker.destroy();
+          d.marker = undefined;
+        }
+      }
+      if (this.stairsZone) this.stairsZone.active = true;
+      this.movementLocked = false;
+      return;
+    }
+
+    // 뜨거운 문 — 차단
+    this.cameras.main.flash(300, 255, 60, 60);
+    showSpeechBubble(this, this.player, '앗, 뜨거워! 다른 길로!', { holdMs: 1800 });
+    door.used = true;
+    if (door.marker) {
+      door.marker.destroy();
+      door.marker = undefined;
+    }
+    // 시각 표시: 문 위에 빨간 X
+    if (door.spriteImg) {
+      door.spriteImg.setTint(0xef4444);
+    }
+    door.hotMark = this.add.graphics();
+    door.hotMark.lineStyle(4, 0xef4444, 0.95);
+    door.hotMark.lineBetween(door.cx - 18, door.cy - 18, door.cx + 18, door.cy + 18);
+    door.hotMark.lineBetween(door.cx - 18, door.cy + 18, door.cx + 18, door.cy - 18);
+    door.hotMark.setDepth(65);
+    await new Promise<void>((r) => this.time.delayedCall(900, () => r()));
+    this.movementLocked = false;
+  }
+
+  // 손수건 보유 여부에 따라 CP4 onCorrect 첫 줄을 분기. 그 외는 그대로.
+  private cp4WithKerchiefVariant() {
+    const hasKerchief = useSessionStore.getState().hasHandkerchief;
+    if (!hasKerchief) return CP4_LOW_POSTURE;
+    const step = CP4_LOW_POSTURE.steps[0];
+    const original = step.onCorrect ?? [];
+    const variant = [
+      { speaker: '나', text: '몸을 낮추고 손수건으로 입과 코를 가린다.' },
+      ...original.slice(1),
+    ];
+    return {
+      ...CP4_LOW_POSTURE,
+      steps: [{ ...step, onCorrect: variant }],
+    };
   }
 
   // 학생 + 친구 텍스처 swap. _b sprite 가 이미 기어가는 모습 + 코 가림이라
@@ -413,13 +545,36 @@ export default class Act1CorridorScene extends Phaser.Scene {
       }
     }
 
-    // A 버튼 (Space) JustDown
-    if (
-      !this.movementLocked &&
-      this.nearbyInteraction &&
-      Phaser.Input.Keyboard.JustDown(this.interactionKey)
-    ) {
-      void this.nearbyInteraction.onTrigger();
+    // 손등 체크 문 marker (활성 + 미사용)
+    let nearestDoor: DoorZone | null = null;
+    let nearestDoorDist = Infinity;
+    for (const d of this.doors) {
+      if (!d.active || d.used) {
+        if (d.marker) {
+          d.marker.destroy();
+          d.marker = undefined;
+        }
+        continue;
+      }
+      if (!d.marker) d.marker = this.createMarker(d.cx, d.cy);
+      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, d.cx, d.cy);
+      if (dist < d.radius && dist < nearestDoorDist) {
+        nearestDoorDist = dist;
+        nearestDoor = d;
+      }
+    }
+    for (const d of this.doors) {
+      if (d.marker) d.marker.setScale(d === nearestDoor ? 1.25 : 0.9);
+    }
+    this.nearbyDoor = nearestDoor;
+
+    // A 버튼 (Space) JustDown — door 우선, 없으면 일반 interaction
+    if (!this.movementLocked && Phaser.Input.Keyboard.JustDown(this.interactionKey)) {
+      if (this.nearbyDoor) {
+        void this.handleDoorCheck(this.nearbyDoor);
+      } else if (this.nearbyInteraction) {
+        void this.nearbyInteraction.onTrigger();
+      }
     }
 
     // 자세 상태 읽기 (B 버튼 / C 키)
@@ -484,8 +639,9 @@ export default class Act1CorridorScene extends Phaser.Scene {
     }
 
     // 친구들 — panic / follower / wander
+    // follower 는 마지막 CP 통과 후 다음 맵 전환 시점에만 ON
     const panicMode = this.movementLocked && this.currentCp >= 4;
-    const followerActive = this.currentCp >= 4 && !this.movementLocked;
+    const followerActive = this.transitioning;
     for (let i = 0; i < this.friends.length; i++) {
       const f = this.friends[i];
       if (panicMode) this.tickPanic(f, delta);

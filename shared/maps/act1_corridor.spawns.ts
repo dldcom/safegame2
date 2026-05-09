@@ -18,9 +18,18 @@ export const ACT1_CORRIDOR_SPAWNS: MapSpawnConfig = {
     // CP4 — 천장 연기 영역 (복도 상단). 학생이 이 y 영역을 통과할 때 트리거
     { name: 'zone_smoke', x: 640, y: 200, width: 1280, height: 240 },
 
-    // CP5 — 갈림길 (좌하단)
+    // 손등 체크 문 3개 — CP4 통과 후 활성. 1개만 시원함 (랜덤). 시원한 문 통과 = 좌하단 텔포.
+    // 복도 중간 가로선 위에 흩어 배치
+    { name: 'door_a', x: 288, y: 576, width: 64, height: 96 },  // 좌
+    { name: 'door_b', x: 608, y: 576, width: 64, height: 96 },  // 중
+    { name: 'door_c', x: 976, y: 576, width: 64, height: 96 },  // 우
+
+    // CP5 — 갈림길 (좌하단). 시원한 문 통과 후 활성.
     { name: 'item_stairs', x: 160, y: 1080, width: 96, height: 128 },     // 정답
     { name: 'item_elevator', x: 280, y: 1100, width: 96, height: 128 },   // 오답
+
+    // 시원한 문 통과 시 학생이 텔포될 위치 (좌하단 통로 위)
+    { name: 'spawn_after_door', x: 240, y: 920, width: 32, height: 32 },
   ],
 
   // 복도 walls. L자 형태의 통로 — 우상단 입구(도서관에서) → 좌하단 출구(계단).

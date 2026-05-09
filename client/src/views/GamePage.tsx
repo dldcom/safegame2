@@ -3,9 +3,14 @@
 import { useEffect, useRef } from 'react';
 import { createPhaserGame } from '@/main-phaser';
 import DialogueBox from '@/components/DialogueBox';
+import QuestionModal from '@/components/QuestionModal';
 import TouchControls from '@/components/TouchControls';
 import CountdownTimer from '@/components/CountdownTimer';
 import ActClearOverlay from '@/components/ActClearOverlay';
+import ShoutMission from '@/components/ShoutMission';
+import AlarmMission from '@/components/AlarmMission';
+import DoorMission from '@/components/DoorMission';
+import RunTimer from '@/components/RunTimer';
 import { useGameStore } from '@/store/useGameStore';
 
 const PARENT_ID = 'phaser-parent';
@@ -30,7 +35,12 @@ export default function GamePage() {
     <div style={styles.wrap}>
       <div id={PARENT_ID} style={styles.phaser} />
       <CountdownTimer />
+      <RunTimer />
       <DialogueBox />
+      <QuestionModal />
+      <ShoutMission />
+      <AlarmMission />
+      <DoorMission />
       <TouchControls />
       <ActClearOverlay />
     </div>
